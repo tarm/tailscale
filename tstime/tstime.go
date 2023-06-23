@@ -59,3 +59,35 @@ func Sleep(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
+
+type Clock interface {
+	Now() time.Time
+	NewTimer(d time.Duration) (TimerController, <-chan time.Time)
+	NewTicker(d time.Duration) (TickerController, <-chan time.Time)
+}
+
+type TickerController interface {
+	Reset(d time.Duration)
+	Stop()
+}
+
+type TimerController interface {
+	Reset(d time.Duration) bool
+	Stop() bool
+}
+
+type StdClock struct{}
+
+func (*StdClock) Now() time.Time {
+	return time.Now()
+}
+
+func (*StdClock) NewTimer(d time.Duration) (TimerController, <-chan time.Time) {
+	t := time.NewTimer(d)
+	return t, t.C
+}
+
+func (*StdClock) NewTicker(d time.Duration) (TickerController, <-chan time.Time) {
+	t := time.NewTicker(d)
+	return t, t.C
+}

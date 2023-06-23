@@ -18,9 +18,9 @@ import (
 )
 
 func TestMessageCache(t *testing.T) {
-	clock := &tstest.Clock{
-		Start: time.Date(1987, 11, 1, 0, 0, 0, 0, time.UTC),
-	}
+	clock := tstest.NewClockBuilder().
+		Start(time.Date(1987, 11, 1, 0, 0, 0, 0, time.UTC)).
+		Finish()
 	mc := &MessageCache{Clock: clock.Now}
 	mc.SetMaxCacheSize(2)
 	clock.Advance(time.Second)
