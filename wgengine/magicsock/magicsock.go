@@ -3247,6 +3247,12 @@ func (c *Conn) shouldDoPeriodicReSTUNLocked() bool {
 	return true
 }
 
+// PathMTU returns the path MTU to the peer at dst (tailscale address)
+// TODO unstub
+func (c *Conn) PathMTU(dst netip.Addr) int {
+	return 1280
+}
+
 func (c *Conn) onPortMapChanged() { c.ReSTUN("portmap-changed") }
 
 // ReSTUN triggers an address discovery.

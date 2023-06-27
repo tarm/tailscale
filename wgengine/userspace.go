@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	crand "crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -476,6 +477,61 @@ func (e *userspaceEngine) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper)
 		}
 	}
 
+	// TODO IPv4 is 20 bytes but IPv6 is 40 - move this into magicsock where we know
+	// which we're using.
+	// TODO consts to avoid numbers.
+	const tailscaleOverhead = 40 + 8 + 32 // IP + UDP + WireGuard
+	pmtu := e.magicConn.PathMTU(p.Dst.Addr())
+	if len(p.Buffer())+tailscaleOverhead > pmtu {
+		var icmph packet.Header
+		var payload []byte
+		if p.Src.Addr().Is4() {
+			// From https://www.ietf.org/rfc/rfc1191.txt
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			// |   Type = 3    |   Code = 4    |           Checksum            |
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			// |           unused = 0          |         Next-Hop MTU          |
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			// |      Internet Header + 64 bits of Original Datagram Data      |
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			icmph = packet.ICMP4Header{
+				IP4Header: packet.IP4Header{
+					IPProto: ipproto.ICMPv4,
+					Src:     p.Dst.Addr(),
+					Dst:     p.Src.Addr(),
+				},
+				Type: packet.ICMP4Unreachable,
+				Code: packet.ICMP4FragmentationNeeded,
+			}
+			payload = make([]byte, 4+20+8)
+			binary.BigEndian.PutUint32(payload, uint32(pmtu))
+			copy(payload[4:], p.Buffer()[:len(payload)-4])
+		} else {
+			// https://www.rfc-editor.org/rfc/rfc4443.html#section-3.2
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			// |     Type      |     Code      |          Checksum             |
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			// |                             MTU                               |
+			// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+			// |                    As much of invoking packet                 |
+			// +               as possible without the ICMPv6 packet           +
+			// |               exceeding the minimum IPv6 MTU [IPv6]           |
+			icmph = packet.ICMP6Header{
+				IP6Header: packet.IP6Header{
+					IPProto: ipproto.ICMPv6,
+					Src:     p.Dst.Addr(),
+					Dst:     p.Src.Addr(),
+				},
+				Type: packet.ICMP6PacketTooBig,
+				Code: packet.ICMP6NoCode,
+			}
+			payload = make([]byte, 4+40+8) // says as much of invoking packet, but headers are enough.
+			binary.BigEndian.PutUint32(payload, uint32(pmtu))
+			copy(payload[4:], p.Buffer()[:len(payload)-4])
+		}
+		e.tundev.InjectInboundCopy(packet.Generate(icmph, payload)) // TODO use InjectInboundDirect
+		return filter.Drop
+	}
 	return filter.Accept
 }
 
