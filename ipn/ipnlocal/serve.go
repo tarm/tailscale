@@ -257,6 +257,96 @@ func (b *LocalBackend) ServeConfig() ipn.ServeConfigView {
 	return b.serveConfig
 }
 
+// StreamFunnel turns on Funnel for the given HostPort, and keeps it on
+// for the duration that the context is open.
+//
+// When the context is done, Funnel is turned off for the port.
+//
+// During the stream, any incoming connections to the port are reported
+// out to the provided io.Writer, in the format ipn.FunnelRequestLog.
+func (b *LocalBackend) StreamFunnel(ctx context.Context, w io.Writer, hp ipn.HostPort) (err error) {
+	port, err := hp.Port()
+	if err != nil {
+		return err
+	}
+
+	// Turn on Funnel for the given HostPort.
+	sc := b.ServeConfig().AsStruct()
+	mak.Set(&sc.AllowFunnel, hp, true)
+	if err := b.SetServeConfig(sc); err != nil {
+		return err
+	}
+
+	// Defer turning off Funnel once stream ends.
+	cleanup := func() {
+		sc := b.ServeConfig().AsStruct()
+		delete(sc.AllowFunnel, hp)
+		err = errors.Join(err, b.SetServeConfig(sc))
+	}
+	defer cleanup()
+
+	f, ok := w.(http.Flusher)
+	if !ok {
+		return errors.New("writer not a flusher")
+	}
+
+	var writeErrs []error
+	writeToStream := func(log ipn.FunnelRequestLog) {
+		jsonLog, err := json.Marshal(log)
+		if err != nil {
+			writeErrs = append(writeErrs, err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "%s\n", jsonLog); err != nil {
+			writeErrs = append(writeErrs, err)
+			return
+		}
+		f.Flush()
+	}
+
+	// Hook up connections stream.
+	b.mu.Lock()
+	mak.Set(&b.funnelStreamers, port, &writeToStream)
+	b.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+	}
+
+	b.mu.Lock()
+	delete(b.funnelStreamers, port)
+	b.mu.Unlock()
+
+	return errors.Join(writeErrs...)
+}
+
+// maybeLogFunnelConnection logs out an ipn.FunnelRequestLog for the
+// connection if a streamer is currently active for the given destPort.
+func (b *LocalBackend) maybeLogFunnelConnection(destPort uint16, srcAddr netip.AddrPort) {
+	b.mu.Lock()
+	stream := b.funnelStreamers[destPort]
+	b.mu.Unlock()
+	if stream == nil {
+		return
+	}
+
+	var log ipn.FunnelRequestLog
+	log.SrcAddr = srcAddr
+	log.Time = time.Now() // TODO: use a different clock somewhere?
+
+	if node, user, ok := b.WhoIs(srcAddr); ok {
+		log.NodeName = node.ComputedName
+		if node.IsTagged() {
+			log.NodeTags = node.Tags
+		} else {
+			log.UserLoginName = user.LoginName
+			log.UserDisplayName = user.DisplayName
+		}
+	}
+
+	(*stream)(log)
+}
+
 func (b *LocalBackend) HandleIngressTCPConn(ingressPeer *tailcfg.Node, target ipn.HostPort, srcAddr netip.AddrPort, getConnOrReset func() (net.Conn, bool), sendRST func()) {
 	b.mu.Lock()
 	sc := b.serveConfig
@@ -359,6 +449,7 @@ func (b *LocalBackend) tcpHandlerForServe(dport uint16, srcAddr netip.AddrPort) 
 	if backDst := tcph.TCPForward(); backDst != "" {
 		return func(conn net.Conn) error {
 			defer conn.Close()
+			b.maybeLogFunnelConnection(dport, srcAddr)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			backConn, err := b.dialer.SystemDial(ctx, "tcp", backDst)
 			cancel()
@@ -522,6 +613,10 @@ func (b *LocalBackend) serveWebHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if c, ok := getServeHTTPContext(r); ok {
+		b.maybeLogFunnelConnection(c.DestPort, c.SrcAddr)
+	}
+
 	if s := h.Text(); s != "" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, s)

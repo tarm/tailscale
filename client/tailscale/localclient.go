@@ -946,20 +946,20 @@ func (lc *LocalClient) NetworkLockForceLocalDisable(ctx context.Context) error {
 	return nil
 }
 
+// NetworkLockDisable shuts down network-lock across the tailnet.
+func (lc *LocalClient) NetworkLockDisable(ctx context.Context, secret []byte) error {
+	if _, err := lc.send(ctx, "POST", "/localapi/v0/tka/disable", 200, bytes.NewReader(secret)); err != nil {
+		return fmt.Errorf("error: %w", err)
+	}
+	return nil
+}
+
 // SetServeConfig sets or replaces the serving settings.
 // If config is nil, settings are cleared and serving is disabled.
 func (lc *LocalClient) SetServeConfig(ctx context.Context, config *ipn.ServeConfig) error {
 	_, err := lc.send(ctx, "POST", "/localapi/v0/serve-config", 200, jsonBody(config))
 	if err != nil {
 		return fmt.Errorf("sending serve config: %w", err)
-	}
-	return nil
-}
-
-// NetworkLockDisable shuts down network-lock across the tailnet.
-func (lc *LocalClient) NetworkLockDisable(ctx context.Context, secret []byte) error {
-	if _, err := lc.send(ctx, "POST", "/localapi/v0/tka/disable", 200, bytes.NewReader(secret)); err != nil {
-		return fmt.Errorf("error: %w", err)
 	}
 	return nil
 }
@@ -980,6 +980,30 @@ func getServeConfigFromJSON(body []byte) (sc *ipn.ServeConfig, err error) {
 		return nil, err
 	}
 	return sc, nil
+}
+
+// StreamFunnel opens funnel on the provided HostPort and keeps the
+// connection to the local backend open, streaming connections made
+// to the funnel URL.
+//
+// When the context is cancelled, the funnel is closed on HostPort.
+//
+// During the duration that the connection is open, the client's
+// ServeConfig will show that funnel is streaming for this HostPort.
+func (lc *LocalClient) StreamFunnel(ctx context.Context, hp ipn.HostPort) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://"+apitype.LocalAPIHost+"/localapi/v0/stream-funnel", jsonBody(hp))
+	if err != nil {
+		return nil, err
+	}
+	res, err := lc.doLocalRequestNiceError(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != 200 {
+		res.Body.Close()
+		return nil, errors.New(res.Status)
+	}
+	return res.Body, nil
 }
 
 // tailscaledConnectHint gives a little thing about why tailscaled (or
