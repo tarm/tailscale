@@ -4,7 +4,7 @@
 // NOTE: linux_{arm64, x86} are the only two currently supported archs due to missing
 // support in upstream dependencies.
 
-//go:build !linux || (linux && !arm64 && !x86)
+//go:build !linux || (linux && !(arm64 || amd64))
 
 package linuxfw
 

@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & AUTHORS
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build linux && (arm64 || x86)
+//go:build linux && (arm64 || amd64)
 
 package linuxfw
 
