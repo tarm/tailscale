@@ -149,7 +149,6 @@ func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []st
 		}
 	}
 	for _, result := range resultMap {
-		fmt.Printf("result %v", result)
 		testAttemptJson, _ := json.Marshal(result)
 		f.Write(testAttemptJson)
 	}
